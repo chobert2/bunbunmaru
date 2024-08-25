@@ -143,6 +143,26 @@ In the former case returns a character, in the latter a string."
         :collect (read-char stream) :into result
         :finally (return (when (> n 1) (cons 'newline nil)))))
 
+(defun read-token (&optional stream eof-error-p eof-value)
+  (let ((next-char (peek-char nil stream nil nil)))
+    (cond ((not next-char)
+           'eof)
+          ((eql next-char #\Newline)
+           (read-newline stream))
+          ((eql next-char #\\)
+           (read-escape stream))
+          ((eql next-char #\()
+           (read-char stream)
+           (let ((peek (peek-char nil stream nil nil)))
+             (cond ((not peek)
+                    (error "error opening paren without closing paren"))
+                   ((eql peek #\:)
+                    (read-tag stream))
+                   (t
+                    (read-form stream)))))
+          (t
+           (read-until-char stream '(#\\ #\( #\Newline))))))
+
 (defun tokenize (file)
   (with-open-file (stream file :direction :input)
     (loop :for token = (read-token stream)
@@ -184,23 +204,3 @@ In the former case returns a character, in the latter a string."
     (princ "<html><head></head><body>" f)
     (princ (process (parse (tokenize in))) f)
     (princ "</body></html>" f)))
-
-(defun read-token (&optional stream eof-error-p eof-value)
-  (let ((next-char (peek-char nil stream nil nil)))
-    (cond ((not next-char)
-           'eof)
-          ((eql next-char #\Newline)
-           (read-newline stream))
-          ((eql next-char #\\)
-           (read-escape stream))
-          ((eql next-char #\()
-           (read-char stream)
-           (let ((peek (peek-char nil stream nil nil)))
-             (cond ((not peek)
-                    (error "error opening paren without closing paren"))
-                   ((eql peek #\:)
-                    (read-tag stream))
-                   (t
-                    (read-form stream)))))
-          (t
-           (read-until-char stream '(#\\ #\( #\Newline))))))
