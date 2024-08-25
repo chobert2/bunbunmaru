@@ -174,7 +174,7 @@ In the former case returns a character, in the latter a string."
                  (push token parsed))))
         :finally (return (nreverse parsed))))
 
-(defun process (parsed)
+(defun evaluate (parsed)
   (with-output-to-string (s)
     (loop with result = nil
           for token in parsed
@@ -196,7 +196,7 @@ In the former case returns a character, in the latter a string."
 (defun process-page (in out)
   (with-open-file (f out :direction :output)
     (handler-case (progn
-                    (princ (process-page-body (process (parse (tokenize in)))) f)
+                    (princ (process-page-body (evaluate (parse (tokenize in)))) f)
                     (format t "~&[INFO] Successfully processed the file '~A'. Path: '~A'." in out))
       (scanner-eof (c)
         (format t "~&[FAIL] ~A: ~A~%" in c)))))
