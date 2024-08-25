@@ -69,6 +69,18 @@
                                  (if tag-body (get-output-stream-string tag-body) "")
                                  tag-name))))
 
+(define-condition scanner-eof (error)
+  ((start :initarg :start :reader scanner-eof-start)
+   (type  :initarg :type  :reader scanner-eof-type)
+   (expected :initarg :expected :reader scanner-eof-expected))
+  (:documentation "Thrown when EOF was found before one of the closing tokens.")
+  (:report (lambda (condition stream)
+             (format stream
+                     "Reached end-of-file while scanning for token of type ~S at position ~D. Expected: '~A'."
+                     (scanner-eof-type condition)
+                     (scanner-eof-start condition)
+                     (scanner-eof-expected condition)))))
+
 (defun read-escape (stream)
   "Read either a single escape character, or an even number of escape characters.
 In the former case returns a character, in the latter a string."
@@ -90,7 +102,8 @@ In the former case returns a character, in the latter a string."
                                                       result))))))))
 
 (defun read-paren (stream)
-  (let ((opening (cons (read-char stream) nil))
+  (let ((start (file-position stream))
+        (opening (cons (read-char stream) nil))
         (result nil))
     (loop :for char = (peek-char nil stream nil nil)
           :with type = (if (eql char #\:) 'tag 'form)
@@ -109,8 +122,9 @@ In the former case returns a character, in the latter a string."
                  (pop opening))
                 (t
                  (push (read-char stream) result)))
-          :finally (return (and result
-                                (cons type (cons #\( (nreverse result))))))))
+          :finally
+          (and opening (error 'scanner-eof :start start :type type :expected ")"))
+          (return (and result (cons type (cons #\( (nreverse result))))))))
 
 (defun read-until-char (stream &optional chars)
   (loop :for char = (peek-char nil stream nil nil)
@@ -174,8 +188,20 @@ In the former case returns a character, in the latter a string."
                  (push (cadr token) result)))
           finally (and result (princ (funcall #'process-tag `(:p ,@(nreverse result)))  s)))))
 
-(defun process-page (out in)
+(defun process-page-body (body)
+  (format nil
+          "<html><head></head><body>~A</body></html>"
+          body))
+
+(defun process-page (in out)
   (with-open-file (f out :direction :output)
-    (princ "<html><head></head><body>" f)
-    (princ (process (parse (tokenize in))) f)
-    (princ "</body></html>" f)))
+    (handler-case (progn
+                    (princ (process-page-body (process (parse (tokenize in)))) f)
+                    (format t "~&[INFO] Successfully processed the file '~A'. Path: '~A'." in out))
+      (scanner-eof (c)
+        (format t "~&[FAIL] ~A: ~A~%" in c)))))
+
+(defun process-pages (paths)
+  (loop :for (in . out) :in paths
+        :do
+        (process-page in out)))
