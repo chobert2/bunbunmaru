@@ -4,9 +4,6 @@
 (defun tagp (obj)
   (and (consp obj) (keywordp (car obj))))
 
-(defun whitespace-p (char)
-  (member char '(#\Space #\Tab #\Linefeed #\Return #\Page) :test #'eql))
-
 (defun escape-attribute (attribute)
   (with-output-to-string (result)
     (loop for char across attribute
