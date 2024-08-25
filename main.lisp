@@ -4,29 +4,41 @@
 (defun tagp (obj)
   (and (consp obj) (keywordp (car obj))))
 
-(defun escape-attribute (attribute)
-  (with-output-to-string (result)
-    (loop for char across attribute
-          do
-          ;; In HTML5 we only really need to escape " and & (https://mina86.com/2021/no-you-dont-need-to-escape-that/)
-          (cond ((char= char #\")
-                 (format result "&quot;"))
-                ((char= char #\&)
-                 (format result "&amp;"))
-                (t
-                 (format result "~C" char))))))
+(defun escape-attribute (attribute &optional (escapep t))
+  (if escapep
+      (with-output-to-string (result)
+        (loop for char across attribute
+              do
+              ;; In HTML5 we only really need to escape " and & (https://mina86.com/2021/no-you-dont-need-to-escape-that/)
+              (cond ((char= char #\")
+                     (format result "&quot;"))
+                    ((char= char #\&)
+                     (format result "&amp;"))
+                    (t
+                     (format result "~C" char)))))
+      attribute))
 
-(defun escape-body (data)
-  (with-output-to-string (result)
-    (loop for char across data
-          do
-          ;; In HTML5 we only really need to escape < and & (https://mina86.com/2021/no-you-dont-need-to-escape-that/)
-          (cond ((char= char #\<)
-                 (format result "&lt;"))
-                ((char= char #\&)
-                 (format result "&amp;"))
-                (t
-                 (format result "~C" char))))))
+(defun escape-body (data &optional (escapep t))
+  (if escapep
+      (with-output-to-string (result)
+        (loop for char across data
+              do
+              ;; In HTML5 we only really need to escape < and & (https://mina86.com/2021/no-you-dont-need-to-escape-that/)
+              (cond ((char= char #\<)
+                     (format result "&lt;"))
+                    ((char= char #\&)
+                     (format result "&amp;"))
+                    (t
+                     (format result "~C" char)))))
+      data))
+
+(defun string-or-eval (form)
+  (if (stringp form)
+      form
+      (let ((evaluated (eval form)))
+        (if (stringp evaluated)
+            evaluated
+            ""))))
 
 (defun process-tag (tag &key (escape-body t) (escape-attr t))
   (loop :with  tag-name                   = (or (tag-name tag) "")
@@ -41,26 +53,15 @@
                (format tag-attr
                        "~A=\"~A\"~A"
                        (tag-name tag-lval)
-                       (cond ((not tag-rval)
-                              "")
-                             (escape-attr
-                              (escape-attribute tag-rval))
-                             (t
-                              tag-rval))
+                       (escape-attribute (string-or-eval tag-rval) escape-attr)
                        (if (keywordp (first rest)) " " ""))
                (setq tag-elems (cddr tag-elems)))
               ((tagp tag-lval)
                (write-string (process-tag tag-lval) tag-body )
                (setq tag-elems (cdr tag-elems)))
               (t
-               (when tag-lval
-                 (write-string (let ((tag-lval (if (stringp tag-lval)
-                                                   tag-lval
-                                                   (eval tag-lval))))
-                                 (if escape-body
-                                     (escape-body tag-lval)
-                                     tag-lval))
-                               tag-body))
+               (and tag-lval (write-string (escape-body (string-or-eval tag-lval) escape-body)
+                                           tag-body))
                (setq tag-elems (cdr tag-elems))))
         :finally (return (format nil
                                  "<~A~A>~A</~A>"
