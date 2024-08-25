@@ -92,10 +92,11 @@ In the former case returns a character, in the latter a string."
                                                              (cdr result))
                                                       result))))))))
 
-(defun read-form (stream)
-  (let ((opening (cons #\( nil))
+(defun read-paren (stream)
+  (let ((opening (cons (read-char stream) nil))
         (result nil))
     (loop :for char = (peek-char nil stream nil nil)
+          :with type = (if (eql char #\:) 'tag 'form)
           :while (and char opening)
           :do
           (cond ((eql char #\\)
@@ -112,23 +113,7 @@ In the former case returns a character, in the latter a string."
                 (t
                  (push (read-char stream) result)))
           :finally (return (and result
-                                (cons 'form (cons #\( (nreverse result))))))))
-
-(defun read-tag (stream)
-  (let ((opening (cons #\( nil))
-        (result nil))
-    (loop :for char = (peek-char nil stream nil nil)
-          :while (and char opening)
-          :do
-          (cond ((eql char #\()
-                 (push (car (push (read-char stream) opening)) result))
-                ((eql char #\))
-                 (push (read-char stream) result)
-                 (pop opening))
-                (t
-                 (push (read-char stream) result)))
-          :finally (return (and result
-                                (cons 'tag (cons #\( (nreverse result))))))))
+                                (cons type (cons #\( (nreverse result))))))))
 
 (defun read-until-char (stream &optional chars)
   (loop :for char = (peek-char nil stream nil nil)
@@ -152,14 +137,7 @@ In the former case returns a character, in the latter a string."
           ((eql next-char #\\)
            (read-escape stream))
           ((eql next-char #\()
-           (read-char stream)
-           (let ((peek (peek-char nil stream nil nil)))
-             (cond ((not peek)
-                    (error "error opening paren without closing paren"))
-                   ((eql peek #\:)
-                    (read-tag stream))
-                   (t
-                    (read-form stream)))))
+           (read-paren stream))
           (t
            (read-until-char stream '(#\\ #\( #\Newline))))))
 
