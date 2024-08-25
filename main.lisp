@@ -185,7 +185,7 @@ In the former case returns a character, in the latter a string."
     (princ (process (parse (tokenize in))) f)
     (princ "</body></html>" f)))
 
-(defun read-token (&optional stream eof-error-p eof-value &key escaped)
+(defun read-token (&optional stream eof-error-p eof-value)
   (let ((next-char (peek-char nil stream nil nil)))
     (cond ((not next-char)
            'eof)
