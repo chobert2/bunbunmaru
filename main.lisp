@@ -204,32 +204,3 @@ In the former case returns a character, in the latter a string."
                     (read-form stream)))))
           (t
            (read-until-char stream '(#\\ #\( #\Newline))))))
-                         
-(defun parse-tag (tag)
-  (loop :with  tag-name                   = (tag-name tag)
-        :with  tag-elems                  = (cdr tag)
-        :with  tag-attr                   = (and tag-elems (make-string-output-stream))
-        :with  tag-body                   = (and tag-elems (make-string-output-stream))
-        :for   (tag-lval tag-rval . rest) = tag-elems
-        :while tag-elems
-        :do
-        (cond ((keywordp tag-lval)
-               (format tag-attr
-                       "~A=\"~A\"~A"
-                       (tag-name tag-lval)
-                       (escape-attribute tag-rval)
-                       (if (keywordp (first rest)) " " ""))
-               (setq tag-elems (cddr tag-elems)))
-              ((tagp tag-lval)
-               (multiple-value-bind (name attr body)
-                   (parse-tag tag-lval)
-                 (format tag-body
-                         "<~A ~A>~A</~A>"
-                         name attr body name))
-               (setq tag-elems (cdr tag-elems)))
-              (t
-               (format tag-body "~A" (escape-body tag-lval))
-               (setq tag-elems (cdr tag-elems))))
-        :finally (return (values tag-name
-                                 (if tag-attr (get-output-stream-string tag-attr) "")
-                                 (if tag-body (get-output-stream-string tag-body) "")))))
