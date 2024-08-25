@@ -4,33 +4,16 @@
 (defun tagp (obj)
   (and (consp obj) (keywordp (car obj))))
 
-(defun escape-attribute (attribute &optional (escapep t))
-  (if escapep
-      (with-output-to-string (result)
-        (loop for char across attribute
-              do
-              ;; In HTML5 we only really need to escape " and & (https://mina86.com/2021/no-you-dont-need-to-escape-that/)
-              (cond ((char= char #\")
-                     (format result "&quot;"))
-                    ((char= char #\&)
-                     (format result "&amp;"))
-                    (t
-                     (format result "~C" char)))))
-      attribute))
+(defconstant +escape-characters+ '(#\" "&quot;" #\& "&amp;" #\< "&lt;"))
 
-(defun escape-body (data &optional (escapep t))
+(defun escape-html (html-string &optional (escapep t))
   (if escapep
       (with-output-to-string (result)
-        (loop for char across data
-              do
-              ;; In HTML5 we only really need to escape < and & (https://mina86.com/2021/no-you-dont-need-to-escape-that/)
-              (cond ((char= char #\<)
-                     (format result "&lt;"))
-                    ((char= char #\&)
-                     (format result "&amp;"))
-                    (t
-                     (format result "~C" char)))))
-      data))
+        (loop :for char :across html-string
+              :do (princ (or (second (member char +escape-characters+ :test #'eql))
+                             char)
+                         result)))
+      html-string))
 
 (defun string-or-eval (form)
   (if (stringp form)
@@ -53,14 +36,14 @@
                (format tag-attr
                        "~A=\"~A\"~A"
                        (tag-name tag-lval)
-                       (escape-attribute (string-or-eval tag-rval) escape-attr)
+                       (escape-html (string-or-eval tag-rval) escape-attr)
                        (if (keywordp (first rest)) " " ""))
                (setq tag-elems (cddr tag-elems)))
               ((tagp tag-lval)
                (write-string (process-tag tag-lval) tag-body )
                (setq tag-elems (cdr tag-elems)))
               (t
-               (and tag-lval (write-string (escape-body (string-or-eval tag-lval) escape-body)
+               (and tag-lval (write-string (escape-html (string-or-eval tag-lval) escape-body)
                                            tag-body))
                (setq tag-elems (cdr tag-elems))))
         :finally (return (format nil
