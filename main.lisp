@@ -4,6 +4,9 @@
 (defun tagp (obj)
   (and (consp obj) (keywordp (car obj))))
 
+(defstruct (token (:constructor make-token (type value position)))
+  type value position)
+
 (defconstant +escape-characters+ '(#\" "&quot;" #\& "&amp;" #\< "&lt;"))
 
 (defun escape-html (html-string &optional (escapep t))
@@ -68,25 +71,27 @@
 (defun read-escape (stream)
   "Read either a single escape character, or an even number of escape characters.
 In the former case returns a character, in the latter a string."
-  (loop :for n = 0 then (1+ n)
+  (loop :with position = (file-position stream)
+        :for n = 0 then (1+ n)
         :for char = (peek-char nil stream nil nil)
         :while (eql char #\\)
         :collect (read-char stream) into result
         :finally (return (and result (cond ((not (member char '(#\( #\)) :test #'eql))
-                                            (cons 'text result))
+                                            (make-token 'text result position))
                                            ((= n 1)
-                                            (cons 'escape nil))
+                                            (make-token 'escape nil position))
                                            (t
-                                            (cons 'text
-                                                  (if (oddp n)
-                                                      ;; We ate too much; give one back and
-                                                      ;; adjust results accordingly.
-                                                      (progn (unread-char #\\ stream)
-                                                             (cdr result))
-                                                      result))))))))
+                                            (make-token 'text
+                                                        (if (oddp n)
+                                                            ;; We ate too much; give one back and
+                                                            ;; adjust results accordingly.
+                                                            (progn (unread-char #\\ stream)
+                                                                   (cdr result))
+                                                            result)
+                                                        position)))))))
 
 (defun read-paren (stream)
-  (let ((start (file-position stream))
+  (let ((position (file-position stream))
         (opening (cons (read-char stream) nil))
         (result nil))
     (loop :for char = (peek-char nil stream nil nil)
@@ -107,21 +112,23 @@ In the former case returns a character, in the latter a string."
                 (t
                  (push (read-char stream) result)))
           :finally
-          (and opening (error 'scanner-eof :start start :type type :expected ")"))
-          (return (and result (cons type (cons #\( (nreverse result))))))))
+          (and opening (error 'scanner-eof :start position :type type :expected ")"))
+          (return (and result (make-token type (cons #\( (nreverse result)) position))))))
 
 (defun read-until-char (stream &optional chars)
-  (loop :for char = (peek-char nil stream nil nil)
+  (loop :with position = (file-position stream)
+        :for char = (peek-char nil stream nil nil)
         :while (and char (not (member char chars :test #'eql)))
         :collect (read-char stream) :into result
-        :finally (return (and result (cons 'text result)))))
+        :finally (return (and result (make-token 'text result position)))))
 
 (defun read-newline (stream)
-  (loop :for char = (peek-char nil stream nil nil)
+  (loop :with position = (file-position stream)
+        :for char = (peek-char nil stream nil nil)
         :for n = 0 then (1+ n)
         :while (eql char #\Newline)
         :collect (read-char stream) :into result
-        :finally (return (when (> n 1) (cons 'newline nil)))))
+        :finally (return (when (> n 1) (make-token 'newline nil position)))))
 
 (defun read-token (&optional stream eof-error-p eof-value)
   (let ((next-char (peek-char nil stream nil nil)))
@@ -147,15 +154,10 @@ In the former case returns a character, in the latter a string."
   (loop :with parsed = nil
         :for token :in tokens
         :do
-        (let ((type (car token))
-              (value (cdr (rplacd token (coerce (cdr token) 'string)))))
-          (cond ((eq type 'text)
-                 (push token parsed))
-                ((eq type 'newline)
-                 (push token parsed))
-                (t
-                 (rplacd token (cons (read-from-string value) nil))
-                 (push token parsed))))
+        (setf (token-value token) (coerce (token-value token) 'string))
+        (unless (or (eq (token-type token) 'text) (eq (token-type token) 'newline))
+          (setf (token-value token) (read-from-string (token-value token))))
+        (push token parsed)
         :finally (return (nreverse parsed))))
 
 (defun evaluate (parsed)
@@ -163,13 +165,13 @@ In the former case returns a character, in the latter a string."
     (loop with result = nil
           for token in parsed
           do
-          (cond ((and (eq (car token) 'newline) result)
+          (cond ((and (eq (token-type token) 'newline) result)
                  (princ (funcall #'process-tag `(:p ,@(nreverse result))) s)
                  (setq result nil))
-                ((eq (car token) 'text)
-                 (push (cdr token) result))
+                ((eq (token-type token) 'text)
+                 (push (token-value token) result))
                 (t
-                 (push (cadr token) result)))
+                 (push (token-value token) result)))
           finally (and result (princ (funcall #'process-tag `(:p ,@(nreverse result)))  s)))))
 
 (defun process-page-body (body)
@@ -183,7 +185,7 @@ In the former case returns a character, in the latter a string."
                     (princ (process-page-body (evaluate (parse (tokenize in)))) f)
                     (format t "~&[INFO] Successfully processed the file '~A'. Path: '~A'." in out))
       (scanner-eof (c)
-        (format t "~&[FAIL] ~A: ~A~%" in c)))))
+        (format t "~&[FAIL] (~A): ~A~%" in c)))))
 
 (defun process-pages (paths)
   (loop :for (in . out) :in paths
