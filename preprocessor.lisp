@@ -18,17 +18,6 @@
 ;;;; #. Add support for blocks, including ones where preprocessing is not performed.
 ;;;; #. See if it makes sense to support html-style (or equivalent) opening/close tags for wrapping large sections.
 ;;;; #. Write the equivalent parser.lisp where the post-process text will actually get parsed.
-;;;; #. Rethink the approach of using printing to stream for sexpcodes
-;;;; etc. Currently, even if a sexpcode wasn't returned from lisp
-;;;; code, it's still included in the output (unless you explicitly
-;;;; change the stream for it.) So either a string should be
-;;;; returned, or maybe a separate stream for every sexpcode that's
-;;;; not directly contained in another sexpcode.
-;;;; #. Consider either a way to ignore output of $(), or generally
-;;;; limit the types that actually get embedded (e.g. to strings,
-;;;; numbers, characters i.e. things that have a nice printed
-;;;; representation and are unlikely to be simply a byproduct.) At
-;;;; the very least I think NIL should be ignored.
 ;;;; #. Create separate functions peek-next-char and read-next-char to
 ;;;; replace all the (peek-char nil stream nil nil t) & read-char
 ;;;; invocations. Perhaps move it to some util file later?
@@ -41,9 +30,6 @@
 
 (defconstant +preprocessor-file-extension+ "ibb"
   "File extension used for files containing the preprocessed output.")
-
-(defparameter *preprocessor-stream* *standard-output*
-  "Stream to which all of the preprocessor output is written to.")
 
 (defparameter *preprocessor-readtable* (copy-readtable)
   "Readtable used when parsing sexpcode that has lisp code embedded using +lisp-form-char+.")
@@ -108,6 +94,11 @@
                      (bbmaru-unterminated-sexpcode-terminator condition)
                      (bbmaru-unterminated-sexpcode-read-form condition)))))
 
+(defun ensure-string (form)
+  "Return either FORM if string, or NIL. Also returns numbers and characters as strings."
+  (cond ((stringp form) form)
+          ((or (characterp form) (numberp form)) (write-to-string form))))
+
 (defun read-lisp-form (stream char)
   "Function started by the +lisp-form-char+ macro character. Reads a
 single lisp form. Atoms need to be formatted as a single form and
@@ -120,7 +111,7 @@ terminated with +lisp-form-char+."
          (peek (peek-char nil stream nil nil t)))
     (cond ((not form)
            ;; EOF; treat +lisp-form-char+ as a normal character.
-           (list 'princ char '*preprocessor-stream*))
+           (write-to-string char))
           (t
            (when (atom form)
              (if (and peek (char/= peek +lisp-form-char+))
@@ -130,7 +121,7 @@ terminated with +lisp-form-char+."
                         :terminator +lisp-form-char+
                         :read-form form)
                  (and peek (read-char stream nil nil t))))
-           (list 'princ form '*preprocessor-stream*)))))
+           (list 'ensure-string form)))))
 
 (defun read-escape-literally (stream &optional characters)
   "Reads all of the consecutive +escape-char+'s in STREAM, plus the
@@ -160,8 +151,8 @@ recursively."
         do
         (cond ((char= peek +escape-char+)
                (setf characters (read-escape-literally stream characters)))
-               ((or (char= peek +lisp-form-char+) (char= peek +sexpcode-beg-char+))
-               (and characters (push (list 'princ (coerce (nreverse characters) 'string) '*preprocessor-stream*) result))
+              ((or (char= peek +lisp-form-char+) (char= peek +sexpcode-beg-char+))
+               (and characters (push (coerce (nreverse characters) 'string) result))
                (setf characters nil)
                (push (read stream nil nil t) result))
               (t
@@ -174,14 +165,14 @@ recursively."
                  :terminator +sexpcode-end-char+
                  :read-form (or peek "EOF")))
         (push (read-char stream nil nil t) characters)
-        (push (list 'princ (coerce (nreverse characters) 'string) '*preprocessor-stream*) result)
+        (let ((string (coerce (nreverse characters) 'string)))
+          (if result
+              (push string result)
+              (setf result string)))
         (return
-          ;; If there's more than one result, wrap in PROGN to combine
-          ;; the forms into a single unit; otherwise return the single
-          ;; form as is.
-          (if (cdr result)
-              (cons 'progn (nreverse result))
-              (car result)))))
+          (if (stringp result)
+              result
+              (cons 'concatenate (cons ''string (nreverse result)))))))
 
 (defun whitespace-char-p (char)
   "Check if CHAR is whitespace, i.e. space or non-graphic character (CLHS whitespace[1] in glossary.)"
@@ -196,12 +187,9 @@ recursively."
         (and result (return (coerce result 'string)))))
 
 (defun preprocess (source destination)
-  (let ((*readtable* *preprocessor-readtable*)
-        (*preprocessor-stream* destination))
+  (let ((*readtable* *preprocessor-readtable*))
     (with-open-file (s source)
-      (format destination "~@[~A~]" (read-whitespace s))
-      (loop for form = (read-preserving-whitespace s nil)
-            while form
+      (loop for peek = (peek-char nil s nil nil t)
+            while peek
             do
-            (eval form)
-            (format destination "~@[~A~]" (read-whitespace s))))))
+            (princ (concatenate 'string (read-whitespace s) (eval (read-preserving-whitespace s nil))) destination)))))
