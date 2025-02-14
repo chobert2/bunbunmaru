@@ -7,22 +7,40 @@
 ;;;; the lexical environment in the process.
 
 ;;;; TODO:
-;;;; 1. Improve the error handling
-;;;;    - report the position in stream, if available (FILE-POSITION)
-;;;;    - report the filename, if available (PATHNAME, TRUENAME)
-;;;; 2. Replace COND with CASE where possible.
-;;;; 3. Add example usage.
-;;;; 4. Add tests.
-;;;; 5. Add support for parsing lambdaway style tags _h1 etc.
-;;;; 6. See if it makes sense for paragraphs to start with just text instead of _p.
-;;;; 7. Add support for blocks, including ones where preprocessing is not performed.
-;;;; 8. See if it makes sense to support html-style (or equivalent) opening/close tags for wrapping large sections.
-;;;; 9. Write the equivalent parser.lisp where the post-process text will actually get parsed.
+;;;; #. Improve the error handling
+;;;;    - add handlers for errors
+;;;;    - think about what to do on edge cases like $$
+;;;; #. Replace COND with CASE where possible.
+;;;; #. Add example usage.
+;;;; #. Add tests.
+;;;; #. Add support for parsing lambdaway style tags _h1 etc.
+;;;; #. See if it makes sense for paragraphs to start with just text instead of _p.
+;;;; #. Add support for blocks, including ones where preprocessing is not performed.
+;;;; #. See if it makes sense to support html-style (or equivalent) opening/close tags for wrapping large sections.
+;;;; #. Write the equivalent parser.lisp where the post-process text will actually get parsed.
+;;;; #. Rethink the approach of using printing to stream for sexpcodes
+;;;; etc. Currently, even if a sexpcode wasn't returned from lisp
+;;;; code, it's still included in the output (unless you explicitly
+;;;; change the stream for it.) So either a string should be
+;;;; returned, or maybe a separate stream for every sexpcode that's
+;;;; not directly contained in another sexpcode.
+;;;; #. Consider either a way to ignore output of $(), or generally
+;;;; limit the types that actually get embedded (e.g. to strings,
+;;;; numbers, characters i.e. things that have a nice printed
+;;;; representation and are unlikely to be simply a byproduct.) At
+;;;; the very least I think NIL should be ignored.
+;;;; #. Create separate functions peek-next-char and read-next-char to
+;;;; replace all the (peek-char nil stream nil nil t) & read-char
+;;;; invocations. Perhaps move it to some util file later?
+;;;; #. Optimize/inline WHITESPACE-CHAR-P.
 
 (defconstant +lisp-form-char+ #\$)
 (defconstant +sexpcode-beg-char+ #\{)
 (defconstant +sexpcode-end-char+ #\})
 (defconstant +escape-char+ #\\)
+
+(defconstant +preprocessor-file-extension+ "ibb"
+  "File extension used for files containing the preprocessed output.")
 
 (defparameter *preprocessor-stream* *standard-output*
   "Stream to which all of the preprocessor output is written to.")
@@ -164,3 +182,26 @@ recursively."
           (if (cdr result)
               (cons 'progn (nreverse result))
               (car result)))))
+
+(defun whitespace-char-p (char)
+  "Check if CHAR is whitespace, i.e. space or non-graphic character (CLHS whitespace[1] in glossary.)"
+  (or (char= char #\ ) (not (graphic-char-p char))))
+
+(defun read-whitespace (stream)
+  "Read consecutive WHITESPACE-CHAR-P from stream and return as a string. Returns NIL if nothing was read."
+  (loop for peek = (peek-char nil stream nil nil t)
+        while (and peek (whitespace-char-p peek))
+        collect (read-char stream nil nil t) into result
+        finally
+        (and result (return (coerce result 'string)))))
+
+(defun preprocess (source destination)
+  (let ((*readtable* *preprocessor-readtable*)
+        (*preprocessor-stream* destination))
+    (with-open-file (s source)
+      (format destination "~@[~A~]" (read-whitespace s))
+      (loop for form = (read-preserving-whitespace s nil)
+            while form
+            do
+            (eval form)
+            (format destination "~@[~A~]" (read-whitespace s))))))
