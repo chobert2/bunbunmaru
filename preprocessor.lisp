@@ -40,11 +40,63 @@
   "Readtable used when parsing lisp forms delimited by +lisp-form-char+.")
 (set-macro-character +lisp-form-char+ 'mark-terminating)
 
+(define-condition bbmaru-unterminated-atom (error)
+  ((filename :initarg :filename
+             :initform nil
+             :accessor bbmaru-unterminated-atom-filename)
+   (position :initarg :position
+             :initform nil
+             :accessor bbmaru-unterminated-atom-position)
+   (terminator :initarg :terminator
+               :initform +lisp-form-char+
+               :accessor bbmaru-unterminated-atom-terminator)
+   (read-form :initarg :read-form
+              :initform nil
+              :accessor bbmaru-unterminated-atom-read-form))
+  (:documentation "Error thrown inside READ-LISP-FORM when an atom was not terminated with +lisp-form-char+.")
+  (:report (lambda (condition stream)
+             (format stream
+                     ;; [file:position] Atom...                  if file and position non-nil
+                     ;; [?:position] Atom... or [file:?] Atom... if file or position nil
+                     ;; Atom...                                  if file and position nil
+                     "~:[~:[~;~:*[?:~A] ~]~;~:*[~A:~:[?~;~:*~A~]] ~]Atom not terminated with ~A: ~A~&"
+                     (bbmaru-unterminated-atom-filename condition)
+                     (bbmaru-unterminated-atom-position condition)
+                     (bbmaru-unterminated-atom-terminator condition)
+                     (bbmaru-unterminated-atom-read-form condition)))))
+
+(define-condition bbmaru-unterminated-sexpcode (error)
+  ((filename :initarg :filename
+             :initform nil
+             :accessor bbmaru-unterminated-sexpcode-filename)
+   (position :initarg :position
+             :initform nil
+             :accessor bbmaru-unterminated-sexpcode-position)
+   (terminator :initarg :terminator
+               :initform +sexpcode-end-char+
+               :accessor bbmaru-unterminated-sexpcode-terminator)
+   (read-form :initarg :read-form
+              :initform nil
+              :accessor bbmaru-unterminated-sexpcode-read-form))
+  (:documentation "Error thrown inside READ-SEXPCODE when a sexpcode was not terminated with +sexpcode-end-char+.")
+  (:report (lambda (condition stream)
+             (format stream
+                     ;; [file:position] Sexpcode...                  if file and position non-nil
+                     ;; [?:position] Sexpcode... or [file:?] Atom... if file or position nil
+                     ;; Sexpcode...                                  if file and position nil
+                     "~:[~:[~;~:*[?:~A] ~]~;~:*[~A:~:[?~;~:*~A~]] ~]Sexpcode not properly ended. Expected ~A, got ~A~&"
+                     (bbmaru-unterminated-sexpcode-filename condition)
+                     (bbmaru-unterminated-sexpcode-position condition)
+                     (bbmaru-unterminated-sexpcode-terminator condition)
+                     (bbmaru-unterminated-sexpcode-read-form condition)))))
+
 (defun read-lisp-form (stream char)
   "Function started by the +lisp-form-char+ macro character. Reads a
 single lisp form. Atoms need to be formatted as a single form and
 terminated with +lisp-form-char+."
   (let* ((*readtable* *lisp-form-readtable*)
+         ;; Unlike NAMESTRING this does not error on streams not associated with files.
+         (position (file-position stream))
          ;; Since we are using READ and nothing else, escaping +lisp-form-char+ works automatically.
          (form (read stream nil nil t))
          (peek (peek-char nil stream nil nil t)))
@@ -54,7 +106,11 @@ terminated with +lisp-form-char+."
           (t
            (when (atom form)
              (if (and peek (char/= peek +lisp-form-char+))
-                 (error "Atom not terminated with ~C: ~S" +lisp-form-char+ form)
+                 (error 'bbmaru-unterminated-atom
+                        :filename (ignore-errors (namestring stream))
+                        :position position
+                        :terminator +lisp-form-char+
+                        :read-form form)
                  (and peek (read-char stream nil nil t))))
            (list 'princ form '*preprocessor-stream*)))))
 
@@ -80,6 +136,8 @@ recursively."
   (loop for peek = (peek-char nil stream nil nil t)
         with characters = (cons char nil)
         with result = nil
+        ;; Unlike NAMESTRING this does not error on streams not associated with files.
+        with position = (file-position stream)
         while (and peek (char/= peek +sexpcode-end-char+))
         do
         (cond ((char= peek +escape-char+)
@@ -91,10 +149,12 @@ recursively."
               (t
                (push (read-char stream nil nil t) characters)))
         finally
-        (and peek (char/= peek +sexpcode-end-char+)
-             (error "Sexpcode not properly ended. Expected ~C, got ~C~%" +sexpcode-end-char+ peek))
-        (or peek
-            (error "Sexpcode not properly ended. Expected ~C, got EOF~%" +sexpcode-end-char+))
+        (when (or (not peek) (char/= peek +sexpcode-end-char+))
+          (error 'bbmaru-unterminated-sexpcode
+                 :filename (ignore-errors (namestring stream))
+                 :position position
+                 :terminator +sexpcode-end-char+
+                 :read-form (or peek "EOF")))
         (push (read-char stream nil nil t) characters)
         (push (list 'princ (coerce (nreverse characters) 'string) '*preprocessor-stream*) result)
         (return
