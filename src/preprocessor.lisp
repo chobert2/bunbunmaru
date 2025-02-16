@@ -18,9 +18,6 @@
 ;;;; #. Add support for blocks, including ones where preprocessing is not performed.
 ;;;; #. See if it makes sense to support html-style (or equivalent) opening/close tags for wrapping large sections.
 ;;;; #. Write the equivalent parser.lisp where the post-process text will actually get parsed.
-;;;; #. Create separate functions peek-next-char and read-next-char to
-;;;; replace all the (peek-char nil stream nil nil t) & read-char
-;;;; invocations. Perhaps move it to some util file later?
 ;;;; #. Optimize/inline WHITESPACE-CHAR-P.
 
 (defconstant +lisp-form-char+ #\$)
@@ -94,6 +91,16 @@
                      (bbmaru-unterminated-sexpcode-terminator condition)
                      (bbmaru-unterminated-sexpcode-read-form condition)))))
 
+(declaim (inline peek-next-char))
+(defun peek-next-char (stream)
+  "Peek next character from STREAM without skipping whitespace. Returns NIL if there are no more characters to read."
+  (peek-char nil stream nil nil t))
+
+(declaim (inline read-next-char))
+(defun read-next-char (stream)
+  "Read next character from STREAM. Returns NIL if there are no more characters to read."
+  (read-char stream nil nil t))
+
 (defun ensure-string (form)
   "Return either FORM if string, or NIL. Also returns numbers and characters as strings."
   (cond ((stringp form) form)
@@ -108,7 +115,7 @@ terminated with +lisp-form-char+."
          (position (file-position stream))
          ;; Since we are using READ and nothing else, escaping +lisp-form-char+ works automatically.
          (form (read stream nil nil t))
-         (peek (peek-char nil stream nil nil t)))
+         (peek (peek-next-char stream)))
     (cond ((not form)
            ;; EOF; treat +lisp-form-char+ as a normal character.
            (write-to-string char))
@@ -120,29 +127,29 @@ terminated with +lisp-form-char+."
                         :position position
                         :terminator +lisp-form-char+
                         :read-form form)
-                 (and peek (read-char stream nil nil t))))
+                 (and peek (read-next-char stream))))
            (list 'ensure-string form)))))
 
 (defun read-escape-literally (stream &optional characters)
   "Reads all of the consecutive +escape-char+'s in STREAM, plus the
 next character if the number of read escapes was odd. If CHARACTERS
 was provided, it will be appendeded to the result."
-  (loop for peek = (peek-char nil stream nil nil t)
+  (loop for peek = (peek-next-char stream)
         for count = 0 then (1+ count)
         with result = nil
         while (and peek (char= peek +escape-char+))
         do
-        (push (read-char stream nil nil t) result)
+        (push (read-next-char stream) result)
         finally
         (when (and (oddp count) peek)
-          (push (read-char stream nil nil t) result))
+          (push (read-next-char stream) result))
         (return (append result characters))))
 
 (defun read-sexpcode (stream char)
   "Function started by the +sexpcode-beg-char+ macro character. Reads
 a sexpcode between +sexpcode-beg-char+ and +sexpcode-end-char+
 recursively."
-  (loop for peek = (peek-char nil stream nil nil t)
+  (loop for peek = (peek-next-char stream)
         with characters = (cons char nil)
         with result = nil
         ;; Unlike NAMESTRING this does not error on streams not associated with files.
@@ -156,7 +163,7 @@ recursively."
                (setf characters nil)
                (push (read stream nil nil t) result))
               (t
-               (push (read-char stream nil nil t) characters)))
+               (push (read-next-char stream) characters)))
         finally
         (when (or (not peek) (char/= peek +sexpcode-end-char+))
           (error 'bbmaru-unterminated-sexpcode
@@ -164,7 +171,7 @@ recursively."
                  :position position
                  :terminator +sexpcode-end-char+
                  :read-form (or peek "EOF")))
-        (push (read-char stream nil nil t) characters)
+        (push (read-next-char stream) characters)
         (let ((string (coerce (nreverse characters) 'string)))
           (if result
               (push string result)
@@ -180,16 +187,16 @@ recursively."
 
 (defun read-whitespace (stream)
   "Read consecutive WHITESPACE-CHAR-P from stream and return as a string. Returns NIL if nothing was read."
-  (loop for peek = (peek-char nil stream nil nil t)
+  (loop for peek = (peek-next-char stream)
         while (and peek (whitespace-char-p peek))
-        collect (read-char stream nil nil t) into result
+        collect (read-next-char stream) into result
         finally
         (and result (return (coerce result 'string)))))
 
 (defun preprocess (source destination)
   (let ((*readtable* *preprocessor-readtable*))
     (with-open-file (s source)
-      (loop for peek = (peek-char nil s nil nil t)
+      (loop for peek = (peek-next-char s)
             while peek
             do
             (princ (concatenate 'string (read-whitespace s) (eval (read-preserving-whitespace s nil))) destination)))))
