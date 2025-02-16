@@ -1,5 +1,3 @@
-(load "preprocessor.lisp")
-
 (defun skip-string-whitespace (string &optional (start 0) (end (1- (length string))))
   (loop for i from start to end
         if (not (whitespace-char-p (aref string i))) do (return i)
