@@ -20,26 +20,21 @@
 ;;;; #. Write the equivalent parser.lisp where the post-process text will actually get parsed.
 ;;;; #. Optimize/inline WHITESPACE-CHAR-P.
 
-(defconstant +lisp-form-char+ #\$)
-(defconstant +sexpcode-beg-char+ #\{)
-(defconstant +sexpcode-end-char+ #\})
-(defconstant +escape-char+ #\\)
-
 (defconstant +preprocessor-file-extension+ "ibb"
   "File extension used for files containing the preprocessed output.")
 
 (defparameter *preprocessor-readtable* (copy-readtable)
-  "Readtable used when parsing sexpcode that has lisp code embedded using +lisp-form-char+.")
-(set-macro-character +sexpcode-beg-char+ 'read-sexpcode nil *preprocessor-readtable*)
-(set-macro-character +lisp-form-char+ 'read-lisp-form nil *preprocessor-readtable*)
+  "Readtable used when parsing sexpcode that has lisp code embedded using +lisp-form-character+.")
+(set-macro-character +sexpcode-starting-character+ 'read-sexpcode nil *preprocessor-readtable*)
+(set-macro-character +lisp-form-character+ 'read-lisp-form nil *preprocessor-readtable*)
 
 (defun mark-terminating (stream char)
   (declare (ignore stream))
   (error "Tried to read a dummy terminating character ~C" char))
 
 (defparameter *lisp-form-readtable* (copy-readtable *preprocessor-readtable*)
-  "Readtable used when parsing lisp forms delimited by +lisp-form-char+.")
-(set-macro-character +lisp-form-char+ 'mark-terminating)
+  "Readtable used when parsing lisp forms delimited by +lisp-form-character+.")
+(set-macro-character +lisp-form-character+ 'mark-terminating)
 
 (define-condition bbmaru-unterminated-atom (error)
   ((filename :initarg :filename
@@ -49,12 +44,12 @@
              :initform nil
              :accessor bbmaru-unterminated-atom-position)
    (terminator :initarg :terminator
-               :initform +lisp-form-char+
+               :initform +lisp-form-character+
                :accessor bbmaru-unterminated-atom-terminator)
    (read-form :initarg :read-form
               :initform nil
               :accessor bbmaru-unterminated-atom-read-form))
-  (:documentation "Error thrown inside READ-LISP-FORM when an atom was not terminated with +lisp-form-char+.")
+  (:documentation "Error thrown inside READ-LISP-FORM when an atom was not terminated with +lisp-form-character+.")
   (:report (lambda (condition stream)
              (format stream
                      ;; [file:position] Atom...                  if file and position non-nil
@@ -74,12 +69,12 @@
              :initform nil
              :accessor bbmaru-unterminated-sexpcode-position)
    (terminator :initarg :terminator
-               :initform +sexpcode-end-char+
+               :initform +sexpcode-ending-character+
                :accessor bbmaru-unterminated-sexpcode-terminator)
    (read-form :initarg :read-form
               :initform nil
               :accessor bbmaru-unterminated-sexpcode-read-form))
-  (:documentation "Error thrown inside READ-SEXPCODE when a sexpcode was not terminated with +sexpcode-end-char+.")
+  (:documentation "Error thrown inside READ-SEXPCODE when a sexpcode was not terminated with +sexpcode-ending-character+.")
   (:report (lambda (condition stream)
              (format stream
                      ;; [file:position] Sexpcode...                  if file and position non-nil
@@ -107,37 +102,37 @@
           ((or (characterp form) (numberp form)) (write-to-string form))))
 
 (defun read-lisp-form (stream char)
-  "Function started by the +lisp-form-char+ macro character. Reads a
+  "Function started by the +lisp-form-character+ macro character. Reads a
 single lisp form. Atoms need to be formatted as a single form and
-terminated with +lisp-form-char+."
+terminated with +lisp-form-character+."
   (let* ((*readtable* *lisp-form-readtable*)
          ;; Unlike NAMESTRING this does not error on streams not associated with files.
          (position (file-position stream))
-         ;; Since we are using READ and nothing else, escaping +lisp-form-char+ works automatically.
+         ;; Since we are using READ and nothing else, escaping +lisp-form-character+ works automatically.
          (form (read stream nil nil t))
          (peek (peek-next-char stream)))
     (cond ((not form)
-           ;; EOF; treat +lisp-form-char+ as a normal character.
+           ;; EOF; treat +lisp-form-character+ as a normal character.
            (write-to-string char))
           (t
            (when (atom form)
-             (if (and peek (char/= peek +lisp-form-char+))
+             (if (and peek (char/= peek +lisp-form-character+))
                  (error 'bbmaru-unterminated-atom
                         :filename (ignore-errors (namestring stream))
                         :position position
-                        :terminator +lisp-form-char+
+                        :terminator +lisp-form-character+
                         :read-form form)
                  (and peek (read-next-char stream))))
            (list 'ensure-string form)))))
 
 (defun read-escape-literally (stream &optional characters)
-  "Reads all of the consecutive +escape-char+'s in STREAM, plus the
+  "Reads all of the consecutive +single-escape-character+'s in STREAM, plus the
 next character if the number of read escapes was odd. If CHARACTERS
 was provided, it will be appendeded to the result."
   (loop for peek = (peek-next-char stream)
         for count = 0 then (1+ count)
         with result = nil
-        while (and peek (char= peek +escape-char+))
+        while (and peek (char= peek +single-escape-character+))
         do
         (push (read-next-char stream) result)
         finally
@@ -146,30 +141,30 @@ was provided, it will be appendeded to the result."
         (return (append result characters))))
 
 (defun read-sexpcode (stream char)
-  "Function started by the +sexpcode-beg-char+ macro character. Reads
-a sexpcode between +sexpcode-beg-char+ and +sexpcode-end-char+
+  "Function started by the +sexpcode-starting-character+ macro character. Reads
+a sexpcode between +sexpcode-starting-character+ and +sexpcode-ending-character+
 recursively."
   (loop for peek = (peek-next-char stream)
         with characters = (cons char nil)
         with result = nil
         ;; Unlike NAMESTRING this does not error on streams not associated with files.
         with position = (file-position stream)
-        while (and peek (char/= peek +sexpcode-end-char+))
+        while (and peek (char/= peek +sexpcode-ending-character+))
         do
-        (cond ((char= peek +escape-char+)
+        (cond ((char= peek +single-escape-character+)
                (setf characters (read-escape-literally stream characters)))
-              ((or (char= peek +lisp-form-char+) (char= peek +sexpcode-beg-char+))
+              ((or (char= peek +lisp-form-character+) (char= peek +sexpcode-starting-character+))
                (and characters (push (coerce (nreverse characters) 'string) result))
                (setf characters nil)
                (push (read stream nil nil t) result))
               (t
                (push (read-next-char stream) characters)))
         finally
-        (when (or (not peek) (char/= peek +sexpcode-end-char+))
+        (when (or (not peek) (char/= peek +sexpcode-ending-character+))
           (error 'bbmaru-unterminated-sexpcode
                  :filename (ignore-errors (namestring stream))
                  :position position
-                 :terminator +sexpcode-end-char+
+                 :terminator +sexpcode-ending-character+
                  :read-form (or peek "EOF")))
         (push (read-next-char stream) characters)
         (let ((string (coerce (nreverse characters) 'string)))
