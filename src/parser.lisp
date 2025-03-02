@@ -1,181 +1,271 @@
-(defun skip-string-whitespace (string &optional (start 0) (end (1- (length string))))
-  (loop for i from start to end
-        if (not (whitespace-char-p (aref string i))) do (return i)
-        finally (return end)))
+(defstruct (buffer (:constructor %make-buffer))
+  "Helper structure for easier parsing of strings into syntax."
+  (string nil :type string)
+  (char nil :type character)
+  (position nil :type fixnum)
+  (length nil :type fixnum))
 
-(defun parse-sexpcode-tag (sexpcode &optional (index 1))
-  (loop while t
-        with start = (if (char= (aref sexpcode index) #\{) (1+ index) index)
-        for end = (skip-string-whitespace sexpcode start) then (1+ end)
-        with char = nil
+(defun make-buffer (string)
+  "Make a buffer structure out of string."
+  (or (stringp string) (error "make-buffer was not passed a string"))
+  (let ((length (length string)))
+    (or (> length 0) (error "make-buffer was passed an empty string"))
+    (%make-buffer :string string :position 0 :length length :char (char string 0))))
+
+(declaim (inline buffer-char=))
+(defun buffer-char= (buffer character)
+  "Check if current character is CHAR= to CHARACTER."
+  (and character (char= (buffer-char buffer) character)))
+
+(declaim (inline buffer-char-member))
+(defun buffer-char-member (buffer characters)
+  "Check if current character is one of CHARACTERS."
+  (not (apply #'char/= (buffer-char buffer) characters)))
+
+(defun buffer-advance-when-char= (buffer character)
+  "Advance if current character is CHAR= to CHARACTER."
+  (or (and (buffer-char= buffer character) (buffer-advance buffer))
+      (buffer-position buffer)))
+
+(defun buffer-advance-when-char-member (buffer characters)
+  "Advance if current character is one of CHARACTERS."
+  (or (and (buffer-char-member buffer characters) (buffer-advance buffer))
+      (buffer-position buffer)))
+
+(defun buffer-advance-while-char-member (buffer characters)
+  "Keep advancing until current character is not one of CHARACTERS."
+  (loop while (buffer-char-member buffer characters)
+        do (buffer-advance buffer)
+        finally (return (buffer-position buffer))))
+
+(defun buffer-trim-advance-when-char= (buffer character)
+  "Advance until current character is not whitespace. Then, skip the
+current character and whitespace following it, if it's CHAR= to CHARACTER."
+  (buffer-advance-while-char-member buffer +whitespace+)
+  (buffer-advance-when-char= buffer character)
+  (buffer-advance-while-char-member buffer +whitespace+)
+  (buffer-position buffer))
+
+(defun buffer-advance (buffer &optional (n 1))
+  "Advance buffer position by N characters (default 1)."
+  (let ((position (+ (buffer-position buffer) n)))
+    (or (< position (buffer-length buffer)) (error "buffer position overflow"))
+    (setf (buffer-position buffer) position
+          (buffer-char buffer) (char (buffer-string buffer) position))
+    position))
+
+(defun buffer-substring (buffer &optional (start 0) (end (buffer-position buffer)))
+  "Return a string of characters in the buffer between START (inclusive) and END (exclusive)."
+  (subseq (buffer-string buffer) start end))
+
+(defun buffer-substring-on (buffer start characters)
+  (loop while (not (buffer-char-member buffer characters))
         do
-        (setf char (aref sexpcode end))
-        (when (or (whitespace-char-p char) (char= char #\.) (char= char #\#) (char= char #\[))
-          (return (values (subseq sexpcode start end) end)))))
+        (if (buffer-char= buffer #\\)
+            ;; Skip escaped character.
+            (buffer-advance buffer 2)
+            (buffer-advance buffer))
+        finally (return (buffer-substring buffer start))))
 
-(defun parse-sexpcode-class (sexpcode &optional (index 1))
-  (loop while t
-        with start = (1+ index)
-        for end = start then (1+ end) 
-        with char = nil
-        with classes = nil
+(defun buffer-delimited-substring (buffer character)
+  "Return the text between two CHARACTERs.
+Buffer should be positioned on the first CHARACTER, or directly after it."
+  (let ((start (buffer-advance-when-char= buffer character)))
+    (loop while (not (buffer-char= buffer character))
+          do
+          (if (buffer-char= buffer #\\)
+              (buffer-advance buffer 2)
+              (buffer-advance buffer))
+          finally
+          (return (prog1 (buffer-substring buffer start)
+                    (buffer-advance buffer))))))
+
+(defconstant +whitespace-vertical+ '(#\Space #\Tab))
+(defconstant +whitespace-horizontal+ '(#\Newline))
+(defconstant +whitespace+ (append +whitespace-vertical+ +whitespace-horizontal+))
+
+(defconstant +sexpcode-starting-character+ #\{)
+(defconstant +sexpcode-ending-character+ #\})
+(defconstant +sexpcode-class-separating-character+ #\.)
+(defconstant +sexpcode-id-separating-character+ #\#)
+(defconstant +sexpcode-attribute-list-starting-character+ #\[)
+(defconstant +sexpcode-attribute-list-ending-character+ #\])
+(defconstant +sexpcode-tag-ending-character+ #\;)
+(defconstant +sexpcode-tag-nesting-character+ #\,)
+
+(defconstant +sexpcode-tag-terminating-characters+
+  (list +sexpcode-tag-ending-character+
+        +sexpcode-tag-nesting-character+))
+
+(defconstant +sexpcode-name-ending-characters+
+  (append (list +sexpcode-starting-character+
+                +sexpcode-ending-character+
+                +sexpcode-class-separating-character+
+                +sexpcode-id-separating-character+
+                +sexpcode-attribute-list-starting-character+)
+          +sexpcode-tag-terminating-characters+
+          +whitespace+))
+
+(defconstant +sexpcode-class-ending-characters+
+  +sexpcode-name-ending-characters+)
+
+(defconstant +sexpcode-id-ending-characters+
+  (remove +sexpcode-class-separating-character+
+          +sexpcode-class-ending-characters+))
+
+(defconstant +sexpcode-attribute-name-invalid-characters+
+  (list #\/ #\> #\=))
+(defconstant +sexpcode-attribute-name-ending-characters+
+  (append (list #\= #\]) +whitespace+))
+(defconstant +sexpcode-attribute-unquoted-ending-characters+
+  (append +whitespace+ '(#\])))
+
+(defun sexpcode-name (buffer)
+  "Parse sexpcode name out of the buffer and return it.
+Buffer should be positioned at the beginning of the sexpcode, or on the first character of the sexpcode name."
+  (let ((start (buffer-trim-advance-when-char= buffer +sexpcode-starting-character+)))
+    (and (buffer-char-member buffer +sexpcode-name-ending-characters+)
+         (error "Sexpcode name started with invalid character"))
+    (and start (buffer-substring-on buffer start +sexpcode-name-ending-characters+))))
+
+(defun sexpcode-class (buffer)
+  "Parse list of sexpcode classes out of the buffer and return them.
+Buffer should be positioned after sexpcode name, but before the class
+name separator, or on the first character of the first class name."
+  (loop while (buffer-char= buffer +sexpcode-class-separating-character+)
+        collect (buffer-substring-on buffer
+                                     (buffer-trim-advance-when-char= buffer +sexpcode-class-separating-character+)
+                                     +sexpcode-class-ending-characters+)
+        into classes
+        do (buffer-advance-while-char-member buffer +whitespace+)
+        finally (return classes)))
+
+(defun sexpcode-id (buffer)
+  "Parse sexpcode id out of the buffer and return it.
+Buffer should be positioned on the id separating character, or any whitespace directly preceding said character."
+  (let ((start (buffer-trim-advance-when-char= buffer +sexpcode-id-separating-character+)))
+    (and (buffer-char-member buffer +sexpcode-id-ending-characters+)
+         (error "Sexpcode id started with invalid character"))
+    (and start (buffer-substring-on buffer start +sexpcode-id-ending-characters+))))
+
+(defun sexpcode-attribute (buffer)
+  "Parse sexpcode attributes out of the buffer and return them.
+Buffer should be positioned on the attribute list starting character,
+any whitespace preceding such character, or on the first character of
+the first attribute name."
+  (let ((attributes nil)
+        (start (buffer-trim-advance-when-char= buffer +sexpcode-attribute-list-starting-character+))
+        (attribute-name nil)
+        (attribute-value nil))
+    (tagbody
+     :attribute-name
+       ;; Buffer should be pointing to a non-whitespace character.
+       (when (buffer-char-member buffer +sexpcode-attribute-name-invalid-characters+)
+         ;; Ensure that the attribute has at least one valid character, so that
+         ;; sanitizing for use in HTML later doesn't result in an empty string.
+         (error "Attribute name starts with an invalid character"))
+       (setf attribute-name (buffer-substring-on buffer start +sexpcode-attribute-name-ending-characters+))
+       (buffer-advance-while-char-member buffer +whitespace+)
+       (when (not (buffer-char= buffer #\=))
+         (go :finish))
+     :equal-sign
+       ;; Tag not actually used, but included for clarity.
+       (setf start (buffer-trim-advance-when-char= buffer #\=))
+     :attribute-value
+       ;; Tag not actually used, but included for clarity.
+       (let* ((buffer-char (buffer-char buffer))
+              (quote-type (when (buffer-char-member buffer '(#\" #\')) buffer-char)))
+         (setf attribute-value
+               (if quote-type
+                   (buffer-delimited-substring buffer quote-type)
+                   (buffer-substring-on buffer start +sexpcode-attribute-unquoted-ending-characters+))))
+       (buffer-advance-while-char-member buffer +whitespace+)
+     :finish
+       (push attribute-name attributes)
+       (push attribute-value attributes)
+       ;; Buffer should be positioned past any trailing whitespace.
+       (when (not (buffer-char= buffer +sexpcode-attribute-list-ending-character+))
+         (setf start (buffer-position buffer)
+               attribute-name nil
+               attribute-value nil)
+         (go :attribute-name)))
+    (nreverse attributes)))
+
+(defun sexpcode-content (buffer)
+  "Parse sexpcode content out of the buffer and return it.
+Buffer should be positioned on the tag ending character."
+  (loop while (not (buffer-char= buffer +sexpcode-ending-character+))
+        ;; Allow single whitespace character to separate the tag and its contents.
+        with start = (buffer-advance-when-char-member buffer +whitespace+)
+        with result = nil
         do
-        (setf char (aref sexpcode end))
-        (when (or (whitespace-char-p char) (char= char #\#) (char= char #\[))
-          (push (subseq sexpcode start end) classes)
-          (return (values (nreverse classes) end)))
-        (when (char= char #\.)
-          (push (subseq sexpcode start end) classes)
-          (setf start (1+ end)))))
-
-(defun parse-sexpcode-id (sexpcode &optional (index 1))
-  (loop while t
-        with start = (if (char= (aref sexpcode index) #\#) (1+ index) index)
-        for end = start then (1+ end)
-        with char = nil
-        do
-        (setf char (aref sexpcode end))
-        (when (or (whitespace-char-p char) (char= char #\[) (char= char #\}))
-          (return (values (subseq sexpcode start end) end)))))
-
-(defun html-space-p (code)
-  ;; U+0020 SPACE U+0009 CHARACTER TABULATION (tab) U+000A LINE FEED (LF)
-  ;; U+000C FORM FEED (FF) U+000D CARRIAGE RETURN (CR)
-  (not (/= code 32 9 10 12 13)))
-
-(defun html-skip-whitespace-in-string (string &optional (start 0) (end (length string) end-supplied-p))
-  (loop for i from start to (if end-supplied-p end (1- end))
-        if (not (html-space-p (char-code (aref string i)))) do (return i)
-        finally (return end)))
-
-(defun unicode-control-character-p (code)
-  (or (< code 32) (and (>= code 128) (<= code 159))))
-
-(defun html-attribute-name-char-p (code)
-  ;; Characters other than space characters, NULL, ", ', >, /, = and the control characters.
-  ;; The standard also specifies "characters not defined by unicode" are also invalid, but
-  ;; I don't know how to check for that, or how to test it.
-  ;; NULL, ", ', >, /, =, ] (for sexpcode syntax)
-  (and
-   (/= code 0 34 39 62 47 61 93)
-   (not (or (html-space-p code) (unicode-control-character-p code)))))
-
-(defun html-attribute-value-unquoted-char-p (code)
-  (and
-   ;; NULL, ", ', =, >, <, `
-   (/= code 0 34 39 61 62 60 96)
-   (not (or (html-space-p code) (unicode-control-character-p code)))))
-
-(defun html-attribute-value-single-quoted-char-p (code)
-  (and
-   ;; ", ', =, >, <, `
-   (/= code 34 39 61 62 60 96)
-   (not (html-space-p code))))
-
-(defun parse-sexpcode-attribute-name (sexpcode &optional (index 0))
-  (loop with length = (length sexpcode)
-        with end = (1- length)
-        for i from index to end
-        if (not (html-attribute-name-char-p (char-code (aref sexpcode i)))) do (loop-finish)
-        finally (return (values (subseq sexpcode index i) i))))
-
-(defun parse-sexpcode-attribute-value-unquoted (sexpcode &optional (index 0))
-  (loop with length = (length sexpcode)
-        with end = (1- length)
-        for i from index to end
-        if (not (html-attribute-value-unquoted-char-p (char-code (aref sexpcode i)))) do (loop-finish)
-        finally (return (values (subseq sexpcode index i) i))))
-
-(defun parse-sexpcode-attribute-value-double-quoted (sexpcode &optional (index 0))
-  (loop with start = (if (char= (aref sexpcode index) #\") (1+ index) index)
-        with length = (length sexpcode)
-        for end = start then (1+ end)
-        while (< end length)
-        if (char= (aref sexpcode end) #\") do (return (values (subseq sexpcode start end) (1+ end)))
-        finally (error "Double quote attribute not terminated with \"")))
-
-(defun parse-sexpcode-attribute-value-single-quoted (sexpcode &optional (index 0))
-  (loop with start = (if (char= (aref sexpcode index) #\') (1+ index) index)
-        with length = (length sexpcode)
-        for end = start then (1+ end)
-        while (< end length)
-        if (char= (aref sexpcode end) #\') do (return (values (subseq sexpcode start end) (1+ end)))
-        finally (error "Single quote attribute not terminated with '")))
-
-(defun parse-sexpcode-attributes (sexpcode &optional (index 1))
-  (loop with start = (html-skip-whitespace-in-string sexpcode (if (char= (aref sexpcode index) #\[) (1+ index) index))
-        with length = (length sexpcode)
-        with char = nil
-        with attribute-name = nil
-        with attribute-value = nil
-        with attributes = nil
-        while (< start length)
-        do
-        (format t "~&start; length: ~A, start ~A~%" length start)
-        (when (char= (aref sexpcode start) #\])
-          (loop-finish))
-        (multiple-value-bind (retval retindex)
-            (parse-sexpcode-attribute-name sexpcode start)
-          (setf attribute-name retval
-                start (html-skip-whitespace-in-string sexpcode retindex)))
-        (format t "~&hehe; length: ~A, start ~A~%" length start)
-        (cond ((char/= (aref sexpcode start) #\=)
-               ;; Empty attribute
-               (push attribute-name attributes)
-               (push nil attributes))
+        (cond ((buffer-char= buffer #\\)
+               (buffer-advance buffer 2))
+              ((buffer-char= buffer +sexpcode-starting-character+)
+               (push (buffer-substring buffer start) result)
+               (push (parse-sexpcode buffer) result)
+               (setf start (buffer-position buffer)))
               (t
-               (setf start (html-skip-whitespace-in-string sexpcode (1+ start))) ;; Skipping =
-               (cond ((char= (aref sexpcode start) #\")
-                      (multiple-value-bind (retval retindex)
-                          (parse-sexpcode-attribute-value-double-quoted sexpcode start)
-                        (setf attribute-value retval
-                              start (html-skip-whitespace-in-string sexpcode retindex))))
-                     ((char= (aref sexpcode start) #\')
-                      (multiple-value-bind (retval retindex)
-                          (parse-sexpcode-attribute-value-single-quoted sexpcode start)
-                        (setf attribute-value retval
-                              start (html-skip-whitespace-in-string sexpcode retindex))))
-                     (t
-                      ;; Unquoted attribute value
-                      (multiple-value-bind (retval retindex)
-                          (parse-sexpcode-attribute-value-unquoted sexpcode start)
-                        (setf attribute-value retval
-                              start (html-skip-whitespace-in-string sexpcode retindex)))))
-               (push attribute-name attributes)
-               (push attribute-value attributes)))
-        (format t "~&end; length: ~A, start ~A~%" length start)
-        (when (char= (aref sexpcode start) #\])
-          (loop-finish))
-        finally (return (values (nreverse attributes) start))))
-                      
-(defun parse-sexpcode (sexpcode)
-  (let ((tag-name nil)
-        (tag-classes nil)
-        (tag-id nil)
-        (tag-attributes nil)
-        (index 0))
-    (multiple-value-bind (retval retindex)
-        (parse-sexpcode-tag sexpcode index)
-      (setf tag-name retval
-            index retindex))
-    (when (char= (aref sexpcode index) #\.)
-      (multiple-value-bind (retval retindex)
-          (parse-sexpcode-class sexpcode index)
-        (setf tag-classes retval
-              index retindex)))
-    (when (char= (aref sexpcode index) #\#)
-      (multiple-value-bind (retval retindex)
-          (parse-sexpcode-id sexpcode index)
-        (setf tag-id retval
-              index retindex)))
-    (when (char= (aref sexpcode index) #\[)
-      (multiple-value-bind (retval retindex)
-          (parse-sexpcode-attributes sexpcode index)
-        (setf tag-attributes retval
-              index retindex)))
-    (list :tag-name tag-name :tag-classes tag-classes :tag-id tag-id :tag-attributes tag-attributes)))
+               (buffer-advance buffer)))
+        finally
+        (push (buffer-substring buffer start) result)
+        (when (< (1+ (buffer-position buffer)) (buffer-length buffer))
+          (buffer-advance-when-char= buffer +sexpcode-ending-character+))
+        (return (nreverse result))))
 
-;; A C0 control is a code point in the range U+0000 NULL to U+001F INFORMATION SEPARATOR ONE, inclusive. (0-31)
-;; A control is a C0 control or a code point in the range U+007F DELETE to U+009F APPLICATION PROGRAM COMMAND, inclusive. (0-31, 127-159)
-;; A noncharacter is a code point that is in the range U+FDD0 to U+FDEF, inclusive, or U+FFFE, U+FFFF, U+1FFFE, U+1FFFF, U+2FFFE, U+2FFFF, U+3FFFE, U+3FFFF, U+4FFFE, U+4FFFF, U+5FFFE, U+5FFFF, U+6FFFE, U+6FFFF, U+7FFFE, U+7FFFF, U+8FFFE, U+8FFFF, U+9FFFE, U+9FFFF, U+AFFFE, U+AFFFF, U+BFFFE, U+BFFFF, U+CFFFE, U+CFFFF, U+DFFFE, U+DFFFF, U+EFFFE, U+EFFFF, U+FFFFE, U+FFFFF, U+10FFFE, or U+10FFFF. 
-;; Attribute names must consist of one or more characters other than controls, U+0020 SPACE, U+0022 ("), U+0027 ('), U+003E (>), U+002F (/), U+003D (=), and noncharacters.
+(defun parse-sexpcode (buffer)
+  "Parse one, possibly nested sexpcode out of buffer and return it as a lisp object."
+  (macrolet ((next-part (&optional expected-char &rest tags)
+               "Jump to sexpcode part that should be processed next."
+               (remove nil `(progn
+                              (when (buffer-char= buffer +sexpcode-tag-nesting-character+)
+                                (buffer-advance buffer)
+                                (setf content (parse-sexpcode buffer))
+                                (go :exit))
+                              (when (buffer-char= buffer +sexpcode-tag-ending-character+)
+                                (buffer-advance buffer)
+                                (go :content))
+                              ,(when tags
+                                 '(buffer-advance-while-char-member buffer +whitespace+))
+                              ,(when (member :id tags)
+                                 `(when (buffer-char= buffer +sexpcode-id-separating-character+)
+                                    (go :id)))
+                              ,(when (member :attribute tags)
+                                 `(when (buffer-char= buffer +sexpcode-attribute-list-starting-character+)
+                                    (go :attribute)))
+                              ,(if expected-char
+                                   `(when (not (buffer-char= buffer ,expected-char))
+                                      (error "Sexpcode not terminated with ;"))
+                                   '(error "Sexpcode not terminated with ;"))))))
+    (let ((name nil)
+          (class nil)
+          (id nil)
+          (attribute nil)
+          (content nil))
+      (tagbody
+       :name
+         (setf name (sexpcode-name buffer))
+         (next-part #\. :id :attribute)
+     :class
+       (setf class (sexpcode-class buffer))
+       (next-part #\# :id :attribute)
+     :id
+       (setf id (sexpcode-id buffer))
+       (next-part #\[)
+     :attribute
+       (setf attribute (sexpcode-attribute buffer))
+       (buffer-advance-when-char= buffer #\])
+       (next-part)
+     :content
+       (setf content (sexpcode-content buffer))
+     :exit nil)
+    (list :name name :class class :id id :attribute attribute :content content))))
+
+(defun parse-sexpcodes (tokens)
+  (loop for token in tokens
+        for buffer = (make-buffer token)
+        with result = nil
+        do
+        (loop while (< (buffer-position buffer) (buffer-length buffer))
+              do (push (parse-sexpcode buffer) result))
+        finally (return (nreverse result))))
