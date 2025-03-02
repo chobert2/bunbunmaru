@@ -54,17 +54,20 @@ current character and whitespace following it, if it's CHAR= to CHARACTER."
           (buffer-char buffer) (char (buffer-string buffer) position))
     position))
 
+(defun buffer-advance-escape (buffer)
+  "Advance the buffer by one, possibly escaped character."
+  (if (buffer-char= buffer #\\)
+      ;; Skip escaped character.
+      (buffer-advance buffer 2)
+      (buffer-advance buffer)))
+
 (defun buffer-substring (buffer &optional (start 0) (end (buffer-position buffer)))
   "Return a string of characters in the buffer between START (inclusive) and END (exclusive)."
   (subseq (buffer-string buffer) start end))
 
 (defun buffer-substring-on (buffer start characters)
   (loop while (not (buffer-char-member buffer characters))
-        do
-        (if (buffer-char= buffer #\\)
-            ;; Skip escaped character.
-            (buffer-advance buffer 2)
-            (buffer-advance buffer))
+        do (buffer-advance-escape buffer)
         finally (return (buffer-substring buffer start))))
 
 (defun buffer-delimited-substring (buffer character)
@@ -72,10 +75,7 @@ current character and whitespace following it, if it's CHAR= to CHARACTER."
 Buffer should be positioned on the first CHARACTER, or directly after it."
   (let ((start (buffer-advance-when-char= buffer character)))
     (loop while (not (buffer-char= buffer character))
-          do
-          (if (buffer-char= buffer #\\)
-              (buffer-advance buffer 2)
-              (buffer-advance buffer))
+          do (buffer-advance-escape buffer)
           finally
           (return (prog1 (buffer-substring buffer start)
                     (buffer-advance buffer))))))
@@ -199,14 +199,12 @@ Buffer should be positioned on the tag ending character."
         with start = (buffer-advance-when-char-member buffer +whitespace+)
         with result = nil
         do
-        (cond ((buffer-char= buffer #\\)
-               (buffer-advance buffer 2))
-              ((buffer-char= buffer +sexpcode-starting-character+)
+        (cond ((buffer-char= buffer +sexpcode-starting-character+)
                (push (buffer-substring buffer start) result)
                (push (parse-sexpcode buffer) result)
                (setf start (buffer-position buffer)))
               (t
-               (buffer-advance buffer)))
+               (buffer-advance-escape buffer)))
         finally
         (push (buffer-substring buffer start) result)
         (when (< (1+ (buffer-position buffer)) (buffer-length buffer))
