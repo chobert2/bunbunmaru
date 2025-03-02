@@ -245,16 +245,16 @@ Buffer should be positioned on the tag ending character."
       (tagbody
        :name
          (setf name (sexpcode-name buffer))
-         (next-part #\. :id :attribute)
+         (next-part +sexpcode-class-separating-character+ :id :attribute)
      :class
        (setf class (sexpcode-class buffer))
-       (next-part #\# :id :attribute)
+       (next-part +sexpcode-id-separating-character+ :id :attribute)
      :id
        (setf id (sexpcode-id buffer))
-       (next-part #\[)
+       (next-part +sexpcode-attribute-list-starting-character+)
      :attribute
        (setf attribute (sexpcode-attribute buffer))
-       (buffer-advance-when-char= buffer #\])
+       (buffer-advance-when-char= buffer +sexpcode-attribute-list-ending-character+)
        (next-part)
      :content
        (setf content (sexpcode-content buffer))
