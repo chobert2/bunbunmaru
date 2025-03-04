@@ -188,10 +188,39 @@ recursively."
         finally
         (and result (return (coerce result 'string)))))
 
-(defun preprocess (source destination)
+(defun read-until (stream chars)
+  (loop for peek = (peek-next-char stream)
+        while (and peek (not (member peek chars)))
+        collect (read-next-char stream) into result
+        finally
+        (and result (return (coerce result 'string)))))
+
+(defun read-token (stream)
+  (loop for peek = (peek-next-char stream)
+        with result = nil
+        with paragraph = nil
+        while peek
+        do
+        (let ((text? (read-until stream '(#\{ #\$ #\Newline))))
+          (when text?
+            (setf result (concatenate 'string result text?))
+            (setf paragraph t))
+          (when (and (eql (peek-next-char stream) #\Newline)
+                     (progn (read-next-char stream) (eql (peek-next-char stream) #\Newline)))
+            (if result
+                (loop-finish)
+                (return 'bol)))
+          (when (or (eql (peek-next-char stream) #\{) (eql (peek-next-char stream) #\$))
+            (setf result (concatenate 'string result (eval (read-preserving-whitespace stream nil))))))
+        finally
+        (return
+          (if paragraph
+              (concatenate 'string "{p; " result "}")
+              result))))
+
+(defun read-tokens (stream)
   (let ((*readtable* *preprocessor-readtable*))
-    (with-open-file (s source)
-      (loop for peek = (peek-next-char s)
-            while peek
-            do
-            (princ (concatenate 'string (read-whitespace s) (eval (read-preserving-whitespace s nil))) destination)))))
+    (loop for token = (read-token stream)
+          while token
+          if (and (stringp token) (> (length token) 0)) collect token into result
+          finally (return result))))
