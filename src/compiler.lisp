@@ -33,6 +33,7 @@
       (when content
         (loop for c in content
               do (write-string (if (stringp c) c (compile-sexpcode c)) s)))
-      (write-string "</" s)
-      (write-string name s)
-      (write-string ">" s))))
+      (when (not (member name +void-tags+ :test #'string-equal))
+        (write-string "</" s)
+        (write-string name s)
+        (write-string ">" s)))))

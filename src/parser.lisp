@@ -12,6 +12,10 @@
     (or (> length 0) (error "make-buffer was passed an empty string"))
     (%make-buffer :string string :position 0 :length length :char (char string 0))))
 
+(defun buffer-not-full-p (buffer &optional (n 1))
+  "Check if changing buffer position by N (default 1) will result in an overflow."
+  (< (+ (buffer-position buffer) n) (buffer-length buffer)))
+
 (declaim (inline buffer-char=))
 (defun buffer-char= (buffer character)
   "Check if current character is CHAR= to CHARACTER."
@@ -48,10 +52,11 @@ current character and whitespace following it, if it's CHAR= to CHARACTER."
 
 (defun buffer-advance (buffer &optional (n 1))
   "Advance buffer position by N characters (default 1)."
-  (let ((position (+ (buffer-position buffer) n)))
-    (or (< position (buffer-length buffer)) (error "buffer position overflow"))
-    (setf (buffer-position buffer) position
-          (buffer-char buffer) (char (buffer-string buffer) position))
+  (symbol-macrolet ((position (buffer-position buffer)))
+    (if (buffer-not-full-p buffer n)
+        (setf position (+ position n)
+              (buffer-char buffer) (char (buffer-string buffer) position))
+        (error "buffer position overflow"))
     position))
 
 (defun buffer-advance-escape (buffer)
@@ -63,7 +68,7 @@ current character and whitespace following it, if it's CHAR= to CHARACTER."
 
 (defun buffer-substring (buffer &optional (start 0) (end (buffer-position buffer)))
   "Return a string of characters in the buffer between START (inclusive) and END (exclusive)."
-  (subseq (buffer-string buffer) start end))
+  (and (< start end) (subseq (buffer-string buffer) start end)))
 
 (defun buffer-substring-on (buffer start characters)
   (loop while (not (buffer-char-member buffer characters))
@@ -166,8 +171,9 @@ Buffer should be positioned on the tag ending character."
               (t
                (buffer-advance-escape buffer)))
         finally
-        (push (buffer-substring buffer start) result)
-        (when (< (1+ (buffer-position buffer)) (buffer-length buffer))
+        (let ((content (buffer-substring buffer start)))
+          (and content (push content result)))
+        (when (buffer-not-full-p buffer)
           (buffer-advance-when-char= buffer +sexpcode-ending-character+))
         (return (nreverse result))))
 
@@ -215,15 +221,17 @@ Buffer should be positioned on the tag ending character."
        (buffer-advance-when-char= buffer +sexpcode-attribute-list-ending-character+)
        (next-part)
      :content
-       (setf content (sexpcode-content buffer))
+         (setf content (sexpcode-content buffer)
+               ;; Inefficient way to ignore content for void tags.
+               content (and (not (member name +void-tags+ :test #'string-equal)) content))
      :exit nil)
-    (list :name name :class class :id id :attribute attribute :content content))))
+      (list :name name :class class :id id :attribute attribute :content content))))
 
 (defun parse-sexpcodes (tokens)
   (loop for token in tokens
         for buffer = (make-buffer token)
         with result = nil
         do
-        (loop while (< (buffer-position buffer) (buffer-length buffer))
+        (loop while (buffer-not-full-p buffer)
               do (push (parse-sexpcode buffer) result))
         finally (return (nreverse result))))

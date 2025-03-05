@@ -1,6 +1,8 @@
 (defconstant +lisp-form-character+ #\$)
 (defconstant +single-escape-character+ #\\)
 
+(defconstant +void-tags+ '("area" "base" "br" "col" "embed" "hr" "img" "input" "link" "meta" "source" "track" "wbr"))
+
 (defconstant +whitespace-vertical+ '(#\Space #\Tab))
 (defconstant +whitespace-horizontal+ '(#\Newline))
 (defconstant +whitespace+ (append +whitespace-vertical+ +whitespace-horizontal+))
