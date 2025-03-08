@@ -25,7 +25,7 @@
 
 (defparameter *preprocessor-readtable* (copy-readtable)
   "Readtable used when parsing sexpcode that has lisp code embedded using +lisp-form-character+.")
-(set-macro-character +sexpcode-starting-character+ 'read-sexpcode nil *preprocessor-readtable*)
+(set-macro-character +tag-open-char+ 'read-sexpcode nil *preprocessor-readtable*)
 (set-macro-character +lisp-form-character+ 'read-lisp-form nil *preprocessor-readtable*)
 
 (defun mark-terminating (stream char)
@@ -69,12 +69,12 @@
              :initform nil
              :accessor bbmaru-unterminated-sexpcode-position)
    (terminator :initarg :terminator
-               :initform +sexpcode-ending-character+
+               :initform +tag-close-char+
                :accessor bbmaru-unterminated-sexpcode-terminator)
    (read-form :initarg :read-form
               :initform nil
               :accessor bbmaru-unterminated-sexpcode-read-form))
-  (:documentation "Error thrown inside READ-SEXPCODE when a sexpcode was not terminated with +sexpcode-ending-character+.")
+  (:documentation "Error thrown inside READ-SEXPCODE when a sexpcode was not terminated with +tag-close-char+.")
   (:report (lambda (condition stream)
              (format stream
                      ;; [file:position] Sexpcode...                  if file and position non-nil
@@ -141,30 +141,30 @@ was provided, it will be appendeded to the result."
         (return (append result characters))))
 
 (defun read-sexpcode (stream char)
-  "Function started by the +sexpcode-starting-character+ macro character. Reads
-a sexpcode between +sexpcode-starting-character+ and +sexpcode-ending-character+
+  "Function started by the +tag-open-char+ macro character. Reads
+a sexpcode between +tag-open-char+ and +tag-close-char+
 recursively."
   (loop for peek = (peek-next-char stream)
         with characters = (cons char nil)
         with result = nil
         ;; Unlike NAMESTRING this does not error on streams not associated with files.
         with position = (file-position stream)
-        while (and peek (char/= peek +sexpcode-ending-character+))
+        while (and peek (char/= peek +tag-close-char+))
         do
         (cond ((char= peek +single-escape-character+)
                (setf characters (read-escape-literally stream characters)))
-              ((or (char= peek +lisp-form-character+) (char= peek +sexpcode-starting-character+))
+              ((or (char= peek +lisp-form-character+) (char= peek +tag-open-char+))
                (and characters (push (coerce (nreverse characters) 'string) result))
                (setf characters nil)
                (push (read stream nil nil t) result))
               (t
                (push (read-next-char stream) characters)))
         finally
-        (when (or (not peek) (char/= peek +sexpcode-ending-character+))
+        (when (or (not peek) (char/= peek +tag-close-char+))
           (error 'bbmaru-unterminated-sexpcode
                  :filename (ignore-errors (namestring stream))
                  :position position
-                 :terminator +sexpcode-ending-character+
+                 :terminator +tag-close-char+
                  :read-form (or peek "EOF")))
         (push (read-next-char stream) characters)
         (let ((string (coerce (nreverse characters) 'string)))

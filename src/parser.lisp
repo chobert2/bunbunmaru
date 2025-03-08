@@ -59,59 +59,87 @@ current character and whitespace following it, if it's CHAR= to CHARACTER."
         (error "buffer position overflow"))
     position))
 
-(defun buffer-advance-escape (buffer)
-  "Advance the buffer by one, possibly escaped character."
-  (if (buffer-char= buffer +single-escape-character+)
-      ;; Skip escaped character.
-      (buffer-advance buffer 2)
-      (buffer-advance buffer)))
-
-(defun buffer-substring (buffer &optional (start 0) (end (buffer-position buffer)))
-  "Return a string of characters in the buffer between START (inclusive) and END (exclusive)."
-  (and (< start end) (subseq (buffer-string buffer) start end)))
-
-(defun buffer-substring-on (buffer start characters)
-  (loop while (not (buffer-char-member buffer characters))
-        do (buffer-advance-escape buffer)
-        finally (return (buffer-substring buffer start))))
-
-(defun buffer-delimited-substring (buffer character)
-  "Return the text between two CHARACTERs.
-Buffer should be positioned on the first CHARACTER, or directly after it."
-  (let ((start (buffer-advance-when-char= buffer character)))
-    (loop while (not (buffer-char= buffer character))
-          do (buffer-advance-escape buffer)
-          finally
-          (return (prog1 (buffer-substring buffer start)
-                    (buffer-advance buffer))))))
+(defun buffer-parse-raw-string (buffer ending unescapable ignored &optional replace wrap)
+  (let ((result nil))
+    (tagbody
+     :start
+       (when (buffer-char-member buffer ending)
+         (go :end))
+     :skip?
+       (when (buffer-char-member buffer ignored)
+         (go :skip))
+       (when (buffer-char= buffer +single-escape-character+)
+         (buffer-advance buffer)
+         (when (buffer-char-member buffer unescapable)
+           (go :skip))
+         (when (buffer-char= buffer #\&)
+           (go :append)))
+       (if replace
+           (go :replace)
+           (go :append))
+     :skip
+       (buffer-advance buffer)
+       (go :start)
+     :replace
+       (let ((replacement (cadr (assoc (buffer-char buffer) replace))))
+         (if replacement
+             (progn (setf result (append replacement result))
+                    (go :advance))
+             (go :append)))
+     :append
+       (push (buffer-char buffer) result)
+       (go :advance)
+     :advance
+       (buffer-advance buffer)
+       (go :start)
+     :end)
+    (if (and result wrap)
+        (coerce (cons wrap (nreverse (cons wrap result))) 'string)
+        (coerce (nreverse result) 'string))))
 
 (defun sexpcode-name (buffer)
   "Parse sexpcode name out of the buffer and return it.
 Buffer should be positioned at the beginning of the sexpcode, or on the first character of the sexpcode name."
-  (let ((start (buffer-trim-advance-when-char= buffer +sexpcode-starting-character+)))
-    (and (buffer-char-member buffer +sexpcode-name-ending-characters+)
-         (error "Sexpcode name started with invalid character"))
-    (and start (buffer-substring-on buffer start +sexpcode-name-ending-characters+))))
+  (buffer-trim-advance-when-char= buffer +tag-open-char+)
+  (let ((name (buffer-parse-raw-string buffer
+                                       +tag-name-end-chars+
+                                       +tag-name-unescapable-chars+
+                                       +tag-name-ignored-chars+)))
+    (if (zerop (length name))
+        "div"
+        name)))
 
 (defun sexpcode-class (buffer)
   "Parse list of sexpcode classes out of the buffer and return them.
 Buffer should be positioned after sexpcode name, but before the class
 name separator, or on the first character of the first class name."
-  (loop while (buffer-char= buffer +sexpcode-class-separating-character+)
-        collect (buffer-substring-on buffer
-                                     (buffer-trim-advance-when-char= buffer +sexpcode-class-separating-character+)
-                                     +sexpcode-class-ending-characters+)
-        into classes
-        do (buffer-advance-while-char-member buffer +whitespace+)
-        finally (return classes)))
+  (loop while (buffer-char= buffer +tag-class-char+)
+        with classes = nil
+        do
+        (buffer-trim-advance-when-char= buffer +tag-class-char+)
+        (let ((class (buffer-parse-raw-string buffer
+                                              +tag-class-end-chars+
+                                              +tag-class-unescapable-chars+
+                                              +tag-class-ignored-chars+
+                                              +tag-class-replace-chars+)))
+          (if (zerop (length class))
+              (warn "Empty class name; skipping")
+              (push class classes)))
+        (buffer-trim-advance-when-char= buffer +tag-class-char+)
+        finally (return (nreverse classes))))
 
 (defun sexpcode-id (buffer)
   "Parse sexpcode id out of the buffer and return it.
 Buffer should be positioned on the id separating character, or any whitespace directly preceding said character."
-  (let ((start (buffer-trim-advance-when-char= buffer +sexpcode-id-separating-character+)))
-    (and (buffer-char-member buffer +sexpcode-id-ending-characters+)
-         (error "Sexpcode id started with invalid character"))
-    (and start (buffer-substring-on buffer start +sexpcode-id-ending-characters+))))
+  (buffer-trim-advance-when-char= buffer +tag-id-char+)
+  (let ((id (buffer-parse-raw-string buffer
+                                     +tag-id-end-chars+
+                                     +tag-id-unescapable-chars+
+                                     +tag-id-ignored-chars+
+                                     +tag-id-replace-chars+)))
+    (if (zerop (length id))
+        (warn "Empty id name; skipping.")
+        id)))
 
 (defun sexpcode-attribute (buffer)
   "Parse sexpcode attributes out of the buffer and return them.
@@ -119,39 +147,59 @@ Buffer should be positioned on the attribute list starting character,
 any whitespace preceding such character, or on the first character of
 the first attribute name."
   (let ((attributes nil)
-        (start (buffer-trim-advance-when-char= buffer +sexpcode-attribute-list-starting-character+))
         (attribute-name nil)
         (attribute-value nil))
+    (buffer-trim-advance-when-char= buffer +tag-attr-open-char+)
     (tagbody
      :attribute-name
        ;; Buffer should be pointing to a non-whitespace character.
-       (when (buffer-char-member buffer +sexpcode-attribute-name-invalid-characters+)
-         ;; Ensure that the attribute has at least one valid character, so that
-         ;; sanitizing for use in HTML later doesn't result in an empty string.
-         (error "Attribute name starts with an invalid character"))
-       (setf attribute-name (buffer-substring-on buffer start +sexpcode-attribute-name-ending-characters+))
+       (setf attribute-name (buffer-parse-raw-string buffer
+                                                     +tag-attr-name-end-chars+
+                                                     +tag-attr-name-unescapable-chars+
+                                                     +tag-attr-name-ignored-chars+))
        (buffer-advance-while-char-member buffer +whitespace+)
        (when (not (buffer-char= buffer #\=))
          (go :finish))
      :equal-sign
        ;; Tag not actually used, but included for clarity.
-       (setf start (buffer-trim-advance-when-char= buffer #\=))
+       (buffer-trim-advance-when-char= buffer #\=)
      :attribute-value
        ;; Tag not actually used, but included for clarity.
-       (let* ((buffer-char (buffer-char buffer))
-              (quote-type (when (buffer-char-member buffer '(#\" #\')) buffer-char)))
-         (setf attribute-value
-               (if quote-type
-                   (buffer-delimited-substring buffer quote-type)
-                   (buffer-substring-on buffer start +sexpcode-attribute-unquoted-ending-characters+))))
+       (cond ((buffer-char= buffer #\")
+              (buffer-advance buffer)
+              (setf attribute-value (buffer-parse-raw-string buffer
+                                                             +tag-attr-dq-end-chars+
+                                                             +tag-attr-dq-unescapable-chars+
+                                                             +tag-attr-dq-ignored-chars+
+                                                             +tag-attr-dq-replace-chars+
+                                                             #\"))
+              (buffer-advance buffer))
+             ((buffer-char= buffer #\')
+              (buffer-advance buffer)
+              (setf attribute-value (buffer-parse-raw-string buffer
+                                                             +tag-attr-sq-end-chars+
+                                                             +tag-attr-sq-unescapable-chars+
+                                                             +tag-attr-sq-ignored-chars+
+                                                             +tag-attr-sq-replace-chars+
+                                                             #\'))
+              (buffer-advance buffer))
+             (t
+              (setf attribute-value (buffer-parse-raw-string buffer
+                                                             +tag-attr-uq-end-chars+
+                                                             +tag-attr-uq-ignored-chars+
+                                                             +tag-attr-uq-unescapable-chars+
+                                                             +tag-attr-uq-replace-chars+
+                                                             #\"))))
        (buffer-advance-while-char-member buffer +whitespace+)
      :finish
-       (push attribute-name attributes)
-       (push attribute-value attributes)
+       (when (not (zerop (length attribute-name)))
+         (push attribute-name attributes)
+         (if (and attribute-value (> (length attribute-value) 0))
+             (push attribute-value attributes)
+             (push nil attributes)))
        ;; Buffer should be positioned past any trailing whitespace.
-       (when (not (buffer-char= buffer +sexpcode-attribute-list-ending-character+))
-         (setf start (buffer-position buffer)
-               attribute-name nil
+       (when (not (buffer-char= buffer +tag-attr-close-char+))
+         (setf attribute-name nil
                attribute-value nil)
          (go :attribute-name)))
     (nreverse attributes)))
@@ -159,22 +207,23 @@ the first attribute name."
 (defun sexpcode-content (buffer)
   "Parse sexpcode content out of the buffer and return it.
 Buffer should be positioned on the tag ending character."
-  (loop while (not (buffer-char= buffer +sexpcode-ending-character+))
-        ;; Allow single whitespace character to separate the tag and its contents.
-        with start = (buffer-advance-when-char-member buffer +whitespace+)
+  (loop while (not (buffer-char= buffer +tag-close-char+))
         with result = nil
+        ;; Allow single whitespace character to separate the tag and its contents.
+        initially (buffer-advance-when-char-member buffer +whitespace+)
         do
-        (cond ((buffer-char= buffer +sexpcode-starting-character+)
-               (push (buffer-substring buffer start) result)
-               (push (parse-sexpcode buffer) result)
-               (setf start (buffer-position buffer)))
-              (t
-               (buffer-advance-escape buffer)))
+        (let ((data (buffer-parse-raw-string buffer
+                                             +tag-data-end-chars+
+                                             +tag-data-ignored-chars+
+                                             +tag-data-unescapable-chars+
+                                             +tag-data-replace-chars+)))
+          (when (not (zerop (length data)))
+            (push data result))
+          (when (buffer-char= buffer +tag-open-char+)
+            (push (parse-sexpcode buffer) result)))
         finally
-        (let ((content (buffer-substring buffer start)))
-          (and content (push content result)))
         (when (buffer-not-full-p buffer)
-          (buffer-advance-when-char= buffer +sexpcode-ending-character+))
+          (buffer-advance-when-char= buffer +tag-close-char+))
         (return (nreverse result))))
 
 (defun parse-sexpcode (buffer)
@@ -182,20 +231,20 @@ Buffer should be positioned on the tag ending character."
   (macrolet ((next-part (&optional expected-char &rest tags)
                "Jump to sexpcode part that should be processed next."
                (remove nil `(progn
-                              (when (buffer-char= buffer +sexpcode-tag-nesting-character+)
+                              (when (buffer-char= buffer +tag-nest-char+)
                                 (buffer-advance buffer)
-                                (setf content (parse-sexpcode buffer))
+                                (push (parse-sexpcode buffer) content)
                                 (go :exit))
-                              (when (buffer-char= buffer +sexpcode-tag-ending-character+)
+                              (when (buffer-char= buffer +tag-end-char+)
                                 (buffer-advance buffer)
                                 (go :content))
                               ,(when tags
                                  '(buffer-advance-while-char-member buffer +whitespace+))
                               ,(when (member :id tags)
-                                 `(when (buffer-char= buffer +sexpcode-id-separating-character+)
+                                 `(when (buffer-char= buffer +tag-id-char+)
                                     (go :id)))
                               ,(when (member :attribute tags)
-                                 `(when (buffer-char= buffer +sexpcode-attribute-list-starting-character+)
+                                 `(when (buffer-char= buffer +tag-attr-open-char+)
                                     (go :attribute)))
                               ,(if expected-char
                                    `(when (not (buffer-char= buffer ,expected-char))
@@ -209,16 +258,16 @@ Buffer should be positioned on the tag ending character."
       (tagbody
        :name
          (setf name (sexpcode-name buffer))
-         (next-part +sexpcode-class-separating-character+ :id :attribute)
+         (next-part +tag-class-char+ :id :attribute)
      :class
        (setf class (sexpcode-class buffer))
-       (next-part +sexpcode-id-separating-character+ :id :attribute)
+       (next-part +tag-id-char+ :id :attribute)
      :id
        (setf id (sexpcode-id buffer))
-       (next-part +sexpcode-attribute-list-starting-character+)
+       (next-part +tag-attr-open-char+)
      :attribute
        (setf attribute (sexpcode-attribute buffer))
-       (buffer-advance-when-char= buffer +sexpcode-attribute-list-ending-character+)
+       (buffer-advance-when-char= buffer +tag-attr-close-char+)
        (next-part)
      :content
          (setf content (sexpcode-content buffer)

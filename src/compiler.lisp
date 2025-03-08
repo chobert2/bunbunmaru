@@ -23,11 +23,9 @@
               initially (write-string " " s)
               do
               (write-string name s)
-              (write-string "=" s)
-              (write-string "\"" s)
-              (if val
-                  (write-string val s))
-              (write-string "\"" s)
+              (when val
+                (write-string "=" s)
+                (write-string val s))
               (when rest (write-string " " s))))
       (write-string ">" s)
       (when content
